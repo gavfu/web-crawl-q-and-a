@@ -18,6 +18,11 @@ from openai.embeddings_utils import distances_from_embeddings
 import pandas as pd
 import numpy as np
 from openai.embeddings_utils import distances_from_embeddings, cosine_similarity
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+)  # for exponential backoff
 
 load_dotenv()
 
@@ -29,6 +34,14 @@ HTTP_URL_PATTERN = r'^http[s]*://.+'
 # Define root domain to crawl
 domain = "openai.com"
 full_url = "https://openai.com/"
+
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
+def openai_completion_with_backoff(**kwargs):
+    return openai.Completion.create(**kwargs)
+
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
+def openai_embedding_with_backoff(**kwargs):
+    return openai.Embedding.create(**kwargs)
 
 # Create a class to parse the HTML and get the hyperlinks
 class HyperlinkParser(HTMLParser):
@@ -287,7 +300,7 @@ df.n_tokens.hist()
 ### Step 10
 ################################################################################
 
-df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
+df['embeddings'] = df.text.apply(lambda x: openai_embedding_with_backoff(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
 df.to_csv('processed/embeddings.csv')
 df.head()
 
@@ -312,7 +325,7 @@ def create_context(
     """
 
     # Get the embeddings for the question
-    q_embeddings = openai.Embedding.create(input=question, engine='text-embedding-ada-002')['data'][0]['embedding']
+    q_embeddings = openai_embedding_with_backoff(input=question, engine='text-embedding-ada-002')['data'][0]['embedding']
 
     # Get the distances from the embeddings
     df['distances'] = distances_from_embeddings(q_embeddings, df['embeddings'].values, distance_metric='cosine')
@@ -363,7 +376,7 @@ def answer_question(
 
     try:
         # Create a completions using the questin and context
-        response = openai.Completion.create(
+        response = openai_completion_with_backoff(
             prompt=f"Answer the question based on the context below, and if the question can't be answered based on the context, say \"I don't know\"\n\nContext: {context}\n\n---\n\nQuestion: {question}\nAnswer:",
             temperature=0,
             max_tokens=max_tokens,
